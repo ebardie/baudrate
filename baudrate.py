@@ -77,8 +77,10 @@ class Baudrate:
     CONTROL_A  = '\x01'
     CONTROL_B  = '\x02'
     CONTROL_C  = '\x03'
-    ESCAPE_KEY = '\x1b'
     INTERPRET_MODE_KEY = CONTROL_B
+    ESCAPE_KEY = '\x1b'
+    ESCAPE_CODE_COMING = '[' # e.g. ESC + this + A == up arrow
+    INTERPRET_ESC_TIMEOUT_MS = 100
 
     UPKEYS = ['u', 'U', 'A']
     DOWNKEYS = ['d', 'D', 'B']
@@ -262,10 +264,25 @@ class Baudrate:
 
         interpret_mode = not self.passthrough_keys
 
+        interpret_esc_timeout = 0
+
         while not self.ctlc:
             c = userinput()
 
-            if self.passthrough_keys:
+            # The Escape value has been detected, and that could indicate:
+            #    exit interpret_mode
+            # or
+            #    if within the timeout period it MAY be followed by a value indicating an escape code
+            if interpret_esc_timeout:
+                now =  time.time() * 1000
+                if now < interpret_esc_timeout:
+                    if c == self.ESCAPE_CODE_COMING:
+                        interpret_mode = True
+                        interpret_esc_timeout = 0
+                        continue
+                interpret_esc_timeout = 0
+
+            if self.passthrough_keys and not interpret_mode:
                 passthrough = True
                 if c == self.INTERPRET_MODE_KEY:
                     if not interpret_mode:
@@ -289,10 +306,9 @@ class Baudrate:
                 elif c == self.CONTROL_C:
                     self.ctlc = True
                 elif c == self.ESCAPE_KEY and self.passthrough_keys:
-                    interpret_mode = False;
+                    interpret_esc_timeout = time.time() * 1000 + self.INTERPRET_ESC_TIMEOUT_MS
+                    interpret_mode = False
                     continue
-                else:
-                    print(f"\ngot: {ord(c)}")
 
                 if self.passthrough_keys:
                     interpret_mode = False
