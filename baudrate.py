@@ -74,6 +74,12 @@ class Baudrate:
 
     DEFAULT_BAUDRATE = "115200"
 
+    CONTROL_A  = '\x01'
+    CONTROL_B  = '\x02'
+    CONTROL_C  = '\x03'
+    ESCAPE_KEY = '\x1b'
+    INTERPRET_MODE_KEY = CONTROL_B
+
     UPKEYS = ['u', 'U', 'A']
     DOWNKEYS = ['d', 'D', 'B']
     RETURN = ['\n', '\r']
@@ -83,7 +89,7 @@ class Baudrate:
     PUNCTUATION = ['.', ',', ':', ';', '?', '!']
     VOWELS = ['a', 'A', 'e', 'E', 'i', 'I', 'o', 'O', 'u', 'U']
 
-    def __init__(self, port=None, threshold=MIN_CHAR_COUNT, timeout=READ_TIMEOUT, name=None, auto=True, verbose=False, allow_newline=False, toggle_baud=DEFAULT_BAUDRATE):
+    def __init__(self, port=None, threshold=MIN_CHAR_COUNT, timeout=READ_TIMEOUT, name=None, auto=True, verbose=False, allow_newline=False, passthrough_keys=False, toggle_baud=DEFAULT_BAUDRATE):
         self.port = port
         self.threshold = threshold
         self.timeout = timeout
@@ -99,6 +105,7 @@ class Baudrate:
         self.newline_sub = f"\r{' ' * self.max_display_chars}\r"
         self.stderr_needs_capping = False
         self.allow_newline = allow_newline
+        self.passthrough_keys = passthrough_keys
         index = self.BAUDRATES.index(toggle_baud)
         self.toggle_bauds = (index, index)
 
@@ -253,20 +260,43 @@ class Baudrate:
     def HandleKeypress(self, *args):
         userinput = RawInput()
 
+        interpret_mode = not self.passthrough_keys
+
         while not self.ctlc:
             c = userinput()
-            if c in self.UPKEYS:
-                self.NextBaudrate(1)
-            elif c in self.DOWNKEYS:
-                self.NextBaudrate(-1)
-            elif c == ' ':
-                self.toggle_baud()
-            elif c in self.RETURN:
-                if self.stderr_needs_capping:
-                    self.cap_stderr()
-                sys.stderr.write('\n')
-            elif c == '\x03':
-                self.ctlc = True
+
+            if self.passthrough_keys:
+                passthrough = True
+                if c == self.INTERPRET_MODE_KEY:
+                    if not interpret_mode:
+                        interpret_mode = True;
+                        continue
+
+                if passthrough:
+                    self.serial.write(bytes(c, 'UTF-8'))
+
+            if interpret_mode:
+                if c in self.UPKEYS:
+                    self.NextBaudrate(1)
+                elif c in self.DOWNKEYS:
+                    self.NextBaudrate(-1)
+                elif c == ' ':
+                    self.toggle_baud()
+                elif c in self.RETURN:
+                    if self.stderr_needs_capping:
+                        self.cap_stderr()
+                    sys.stderr.write('\n')
+                elif c == self.CONTROL_C:
+                    self.ctlc = True
+                elif c == self.ESCAPE_KEY and self.passthrough_keys:
+                    interpret_mode = False;
+                    continue
+                else:
+                    print(f"\ngot: {ord(c)}")
+
+                if self.passthrough_keys:
+                    interpret_mode = False
+
 
     def MinicomConfig(self, name=None):
         success = True
@@ -322,7 +352,8 @@ if __name__ == '__main__':
         print("\t-a                     Enable auto detect mode")
         print("\t-b                     Display supported baud rates and exit")
         print("\t-q                     Do not display data read from the serial port")
-        print("\t-v                     Don't supress newline in display data read from the serial port")
+        print("\t-v                     Don't suppress newline in display data read from the serial port")
+        print(f"\t-k                     Passthough keypresses to serial connexion. Use CTRL-{chr(ord('A') + ord(baud.INTERPRET_MODE_KEY[0]) - 1)} as prefix key to control app.")
         print("\t-T <baud>              Toggle between current value and the given baud when SPACE is pressed")
         print("\t-h                     Display help")
         print("")
@@ -347,9 +378,10 @@ if __name__ == '__main__':
         name = None
         port = '/dev/ttyUSB0'
         toggle_baud = Baudrate.DEFAULT_BAUDRATE
+        passthrough_keys = False
 
         try:
-              (opts, args) = GetOpt(sys.argv[1:], 'p:t:c:n:abqvT:h')
+              (opts, args) = GetOpt(sys.argv[1:], 'p:t:c:n:abqvkT:h')
         except GetoptError as e:
             print(e)
             usage()
@@ -375,6 +407,8 @@ if __name__ == '__main__':
             elif opt == '-v':
                 verbose = True
                 allow_newline = True
+            elif opt == '-k':
+                passthrough_keys = True
             elif opt == '-T':
                 toggle_baud = arg
                 try:
@@ -385,20 +419,27 @@ if __name__ == '__main__':
             else:
                 usage()
 
-        baud = Baudrate(port, threshold=threshold, timeout=timeout, name=name, verbose=verbose, auto=auto, allow_newline=allow_newline, toggle_baud=toggle_baud)
+        baud = Baudrate(port, threshold=threshold, timeout=timeout, name=name, verbose=verbose, auto=auto, allow_newline=allow_newline, passthrough_keys=passthrough_keys, toggle_baud=toggle_baud)
 
         if display:
             display_baudrates()
         else:
-            print("")
-            print("Starting baudrate detection on %s, turn on your serial device now." % port)
-            print("Press Ctl+C to quit.")
-            print("")
+            if not passthrough_keys:
+                print("")
+                print("Starting baudrate detection on %s, turn on your serial device now." % port)
+                print("Press Ctl+C to quit.")
+                print("")
 
             baud.Open()
 
             try:
                 rate = baud.Detect()
+            except KeyboardInterrupt:
+                pass
+
+            baud.Close()
+
+            if not passthrough_keys:
                 print("\nDetected baudrate: %s" % rate)
 
                 if name is None:
@@ -422,9 +463,5 @@ if __name__ == '__main__':
                         print(config)
                 else:
                     print(config)
-            except KeyboardInterrupt:
-                pass
-
-            baud.Close()
 
     main()
