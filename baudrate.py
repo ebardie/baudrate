@@ -84,6 +84,7 @@ class Baudrate:
 
     UPKEYS = ['u', 'U', 'A']
     DOWNKEYS = ['d', 'D', 'B']
+    HELPKEYS = ['h', '?']
     RETURN = ['\n', '\r']
 
     MIN_CHAR_COUNT = 25
@@ -297,6 +298,8 @@ class Baudrate:
                     self.NextBaudrate(1)
                 elif c in self.DOWNKEYS:
                     self.NextBaudrate(-1)
+                elif c in self.HELPKEYS:
+                    self.help_keys()
                 elif c == ' ':
                     self.toggle_baud()
                 elif c in self.RETURN:
@@ -313,6 +316,23 @@ class Baudrate:
                 if self.passthrough_keys:
                     interpret_mode = False
 
+    def prefix_char(self):
+        return chr(ord('A') + ord(self.INTERPRET_MODE_KEY[0]) - 1)
+
+    def help_keys(self):
+        prefix = f"CTRL-{self.prefix_char()}"
+
+        if self.stderr_needs_capping:
+            self.cap_stderr()
+
+        print(f"""Keys:
+        {prefix} when in key press passthrough mode for this programme to process the following keypresses.
+        ESC to cancel {prefix}.
+        ↑ and ↓ arrow keys or 'u' and 'd' to increment/decrement the baudrate.
+        h to display this helpful information.
+        SPACE to toggle between recent baudrates.
+        CTRL-C to break out from this programme.
+        """, file=sys.stderr)
 
     def MinicomConfig(self, name=None):
         success = True
@@ -335,7 +355,7 @@ class Baudrate:
                 open("/etc/minicom/minirc.%s" % name, "w").write(config)
             except Exception as e:
                 if self.stderr_needs_capping:
-                    seld.cap_stderr()
+                    self.cap_stderr()
                 print("Error saving minicom config file:", str(e))
                 success = False
 
@@ -369,7 +389,7 @@ if __name__ == '__main__':
         print("\t-b                     Display supported baud rates and exit")
         print("\t-q                     Do not display data read from the serial port")
         print("\t-v                     Don't suppress newline in display data read from the serial port")
-        print(f"\t-k                     Passthough keypresses to serial connexion. Use CTRL-{chr(ord('A') + ord(baud.INTERPRET_MODE_KEY[0]) - 1)} as prefix key to control app.")
+        print(f"\t-k                     Passthough keypresses to serial connexion. Use CTRL-{baud.prefix_char()} as prefix key to control app.")
         print("\t-T <baud>              Toggle between current value and the given baud when SPACE is pressed")
         print("\t-h                     Display help")
         print("")
