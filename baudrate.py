@@ -77,6 +77,7 @@ class Baudrate:
     CONTROL_A  = '\x01'
     CONTROL_B  = '\x02'
     CONTROL_C  = '\x03'
+    CONTROL_L  = '\x0c'
     INTERPRET_MODE_KEY = CONTROL_B
     ESCAPE_KEY = '\x1b'
     ESCAPE_CODE_COMING = '[' # e.g. ESC + this + A == up arrow
@@ -91,6 +92,8 @@ class Baudrate:
     WHITESPACE = [' ', '\t', '\r', '\n']
     PUNCTUATION = ['.', ',', ':', ';', '?', '!']
     VOWELS = ['a', 'A', 'e', 'E', 'i', 'I', 'o', 'O', 'u', 'U']
+
+    CLS_SEQ = '\033[2J'
 
     def __init__(self, port=None, threshold=MIN_CHAR_COUNT, timeout=READ_TIMEOUT, name=None, auto=True, verbose=False, allow_newline=False, passthrough_keys=False, toggle_baud=DEFAULT_BAUDRATE):
         self.port = port
@@ -267,6 +270,8 @@ class Baudrate:
 
         interpret_esc_timeout = 0
 
+        prev_keypress = None
+
         while not self.ctlc:
             c = userinput()
 
@@ -282,16 +287,15 @@ class Baudrate:
                         interpret_esc_timeout = 0
                         continue
                 interpret_esc_timeout = 0
+                interpret_mode = False
 
             if self.passthrough_keys and not interpret_mode:
-                passthrough = True
                 if c == self.INTERPRET_MODE_KEY:
-                    if not interpret_mode:
-                        interpret_mode = True;
-                        continue
+                    interpret_mode = True
+                    prev_keypress = c
+                    continue
 
-                if passthrough:
-                    self.serial.write(bytes(c, 'UTF-8'))
+                self.serial.write(bytes(c, 'UTF-8'))
 
             if interpret_mode:
                 if c in self.UPKEYS:
@@ -299,40 +303,56 @@ class Baudrate:
                 elif c in self.DOWNKEYS:
                     self.NextBaudrate(-1)
                 elif c in self.HELPKEYS:
-                    self.help_keys()
+                    self.keys_help()
                 elif c == ' ':
                     self.toggle_baud()
                 elif c in self.RETURN:
                     if self.stderr_needs_capping:
                         self.cap_stderr()
                     sys.stderr.write('\n')
+                elif c == self.INTERPRET_MODE_KEY:
+                    if self.passthrough_keys and prev_keypress == self.INTERPRET_MODE_KEY:
+                        interpret_mode = False
+                        self.serial.write(bytes(c, 'UTF-8'))
                 elif c == self.CONTROL_C:
+                    if self.stderr_needs_capping:
+                        self.cap_stderr()
+                    print("Exitting...", file=sys.stderr)
                     self.ctlc = True
-                elif c == self.ESCAPE_KEY and self.passthrough_keys:
-                    interpret_esc_timeout = time.time() * 1000 + self.INTERPRET_ESC_TIMEOUT_MS
-                    interpret_mode = False
-                    continue
+                elif c == self.CONTROL_L:
+                    if self.stderr_needs_capping:
+                        self.cap_stderr()
+                    print(self.CLS_SEQ, file=sys.stderr)
+                elif c == self.ESCAPE_KEY:
+                    if self.passthrough_keys:
+                        interpret_esc_timeout = time.time() * 1000 + self.INTERPRET_ESC_TIMEOUT_MS
+                        interpret_mode = False
+                        prev_keypress = c
+                        continue
 
-                if self.passthrough_keys:
-                    interpret_mode = False
+            prev_keypress = c
 
     def prefix_char(self):
         return chr(ord('A') + ord(self.INTERPRET_MODE_KEY[0]) - 1)
 
-    def help_keys(self):
+    def keys_help(self):
         prefix = f"CTRL-{self.prefix_char()}"
 
         if self.stderr_needs_capping:
             self.cap_stderr()
 
-        print(f"""Keys:
-        {prefix} when in key press passthrough mode for this programme to process the following keypresses.
-        ESC to cancel {prefix}.
-        ↑ and ↓ arrow keys or 'u' and 'd' to increment/decrement the baudrate.
-        h to display this helpful information.
-        SPACE to toggle between recent baudrates.
-        CTRL-C to break out from this programme.
-        """, file=sys.stderr)
+        passthrough_msg = f"""\n    {prefix} for this programme to process the following keypress,
+        i.e. suspend keypress passthrough.  To passthrough {prefix} press it twice.
+    ESC to cancel {prefix}, i.e resume keypress passthrough.""" if self.passthrough_keys else ""
+
+        msg = f"""Keys:
+    {passthrough_msg}
+    ↑ and ↓ arrow keys or 'u' and 'd' to increment/decrement the baudrate.
+    h to display this helpful information.
+    SPACE to toggle between recent baudrates.
+    CTRL-C to break out from this programme.
+"""
+        print(msg, file=sys.stderr)
 
     def MinicomConfig(self, name=None):
         success = True
@@ -461,43 +481,48 @@ if __name__ == '__main__':
             display_baudrates()
         else:
             if not passthrough_keys:
-                print("")
-                print("Starting baudrate detection on %s, turn on your serial device now." % port)
-                print("Press Ctl+C to quit.")
-                print("")
+                print(f"""\nStarting baudrate detection on {port}, turn on your serial device now."
+Press CTRL+C to stop and handle the result.
+Press CTRL+C twice to exit.""")
+
+            ctrl_c = False
 
             baud.Open()
 
             try:
                 rate = baud.Detect()
             except KeyboardInterrupt:
+                ctrl_c = True
                 pass
 
             baud.Close()
 
-            if not passthrough_keys:
-                print("\nDetected baudrate: %s" % rate)
+            if not ctrl_c and not passthrough_keys:
+                try:
+                    print(f"\nDetected baudrate: {rate}")
 
-                if name is None:
-                    print("\nSave minicom configuration as: ",)
-                    name = sys.stdin.readline().strip()
-                    print("")
+                    if name is None:
+                        print("\nSave minicom configuration as: ",)
+                        name = sys.stdin.readline().strip()
+                        print("")
 
-                (ok, config) = baud.MinicomConfig(name)
-                if name and name is not None:
-                    if ok:
-                        if not run:
-                            print("Configuration saved. Run minicom now [n/Y]? ",)
-                            yn = sys.stdin.readline().strip()
-                            print("")
-                            if yn == "" or yn.lower().startswith('y'):
-                                run = True
+                    (ok, config) = baud.MinicomConfig(name)
+                    if name and name is not None:
+                        if ok:
+                            if not run:
+                                print("Configuration saved. Run minicom now [n/Y]? ",)
+                                yn = sys.stdin.readline().strip()
+                                print("")
+                                if yn == "" or yn.lower().startswith('y'):
+                                    run = True
 
-                        if run:
-                            subprocess.call(["minicom", name])
+                            if run:
+                                subprocess.call(["minicom", name])
+                        else:
+                            print(config)
                     else:
                         print(config)
-                else:
-                    print(config)
+                except KeyboardInterrupt:
+                    pass
 
     main()
